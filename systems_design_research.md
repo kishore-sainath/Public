@@ -4890,4 +4890,138 @@ Glossary of Key Terms
 -   **Round Robin Load Balancing:** A simple load balancing technique that distributes incoming requests sequentially to each server in a group.
 -   **Item potent:** An operation that can be performed multiple times without changing the result beyond the initial application.
 
--   
+# Typeahead Suggestion System Design: Google Search Bar Implementation
+
+**The YouTube transcript discusses the system design of a type-ahead suggestion feature, similar to what's found in search bars or text messaging apps.** **It explores various algorithmic approaches, from simple caching to the use of tries, balancing read speed and memory usage.** **The discussion covers capacity estimations, emphasizing the need for fast read speeds and daily updates of suggestions.** **The transcript also addresses challenges in a distributed environment, like the need for partitioning and sharding to handle large datasets and high traffic.** **Finally, it proposes using range-based partitioning with dynamic repartitioning to handle potential hotspots and a batch job processing pipeline using Hadoop, Kafka, and Flink for updating the suggestion data.**
+
+Briefing Document: 
+------------------
+
+**Overview:**
+
+This document summarizes a discussion of designing a typeahead suggestion system, similar to those used in text messaging and Google Search. The discussion covers algorithmic and systems design considerations, emphasizing the need for fast read speeds and exploring different approaches to data storage, retrieval, and updating.
+
+**Main Themes and Ideas:**
+
+1.  **Problem Definition and Requirements:**
+
+-   The system should provide quick suggestions as users type. These can be individual words (like in text messaging) or full search terms (like in Google Search).
+-   Latency for updates to the suggestion list is less critical than read speed, with an acceptable update frequency of "at least once per day."
+-   The initial design will not incorporate personalized suggestions.
+-   Key goal: optimize for read speed
+
+1.  **Capacity Estimation and Storage Considerations:**
+
+-   **Single-Word Suggestions (Text Messaging):** The speaker considers whether the entire dataset of suggestions can be stored in memory on the client device.
+-   Estimation: 200,000 English words, average length of 5 characters.
+-   Calculations: Caching all prefixes and top 3 suggestions requires approximately 20MB. "20 megabytes is actually not a lot of memory even if we're dealing with phones these days..."
+-   Alternative: Storing only the counts of each word requires only 800KB but necessitates on-the-fly computation of top suggestions.
+-   **Multi-Word Suggestions (Google Search):**Estimation: 1 billion unique search queries per day, average length of 20 characters.
+-   Calculations: Storing all prefixes and top 10 suggestions requires approximately 4TB. "Now that's obviously a lot. Not only is that so much data that we can't store it on client devices, we also couldn't even store it on one server..." This necessitates a distributed approach.
+
+1.  **Implementation Details and Data Structures:**
+
+-   **Non-Caching Approach (Low Memory):**Sort words by search order (alphabetically).
+-   Use binary search to find the range of words matching a prefix.
+-   Employ a Min-Heap of size *n* (e.g., 3 or 10) to find the top *n* suggestions within that range.
+-   Complexity: "o of n but then you also multiply in a factor of you know log of three which is effectively constant so we don't really care about this but the point is it's linear to the number of terms that are suffixed by your search term"
+-   **Local Caching Approach (HashMap):**Store a hashmap from prefix to top suggestions.
+-   Provides O(1) retrieval *per character* (though hashing the prefix isn't truly O(1)).
+-   **Trie Data Structure:**A tree-like structure where each node represents a character, allowing for efficient prefix-based searching.
+-   At each node, cache the top suggestions.
+-   "At every single node we cach the top terms and then let's imagine that you know I was already making a search right so I already got the top three terms for this and then now all of a sudden I want to get the top terms for AP so it's an O of one jump down to AP and then I already have access to the top terms which is going to be really great"
+-   Memory usage is linear in relation to search term
+-   Can further compress memory by "dictionary compression"
+
+1.  **Updating the Trie:**
+
+-   Writes can be problematic as a single write can affect parent nodes
+-   Writes will likely require locking
+-   A batch job is preferred to update the trie
+-   Data is uploaded via the following flow: Client -> Server -> Kafka -> Flink -> HDFS
+-   Spark job: Take every term, convert into prefixes. Partition by term. Use Min Heap to take top N suggestions
+-   New try can be loaded with a lead code problem: While loop creating node at current index
+
+1.  **Distributed System Design (for Google Search):**
+
+-   **Partitioning/Sharding:** Essential due to the large data volume.
+-   Websockets can be used for communication: supports bidirectional connections
+-   Range-based partitioning is suggested: sort all terms alphabetically
+-   Hotspots and repartitioning: create small fix-sized partitions and use another service to monitor the load and copy to smaller nodes
+-   **Architecture Diagram:**Client -> Load Balancer -> Suggestion Service via Websocket
+-   Suggestion clicks flow into: Load Balancer -> Aggregation Service -> Kafka -> Hadoop
+-   Hadoop computes frequencies, the results are sent to Suggestion service which builds the Try.
+
+**Key Quotes:**
+
+-   "20 megabytes is actually not a lot of memory even if we're dealing with phones these days..."
+-   "Now that's obviously a lot. Not only is that so much data that we can't store it on client devices, we also couldn't even store it on one server..."
+-   "At every single node we cach the top terms and then let's imagine that you know I was already making a search right so I already got the top three terms for this and then now all of a sudden I want to get the top terms for AP so it's an O of one jump down to AP and then I already have access to the top terms which is going to be really great"
+
+**Conclusion:**
+
+The design of a typeahead suggestion system involves trade-offs between memory usage, computational complexity, and read speed. While a trie data structure with caching offers the potential for fast lookups, scaling to large datasets requires a distributed approach with careful consideration of partitioning strategies and update mechanisms.
+
+Study Guide
+===========
+
+Quiz
+----
+
+1.  What are the two main examples of typeahead suggestions discussed in the source, and how do they differ?
+2.  What are the three problem requirements specified for the typeahead suggestion system?
+3.  Why is it important to prioritize read speeds in a typeahead suggestion system?
+4.  Explain the non-caching approach for implementing typeahead suggestions, and what are its trade-offs?
+5.  How does the Trie data structure improve the efficiency of typeahead suggestions compared to a hash map?
+6.  Explain dictionary compression as an optimization for reducing memory footprint in a Trie-based typeahead system.
+7.  What are the challenges associated with updating the Trie data structure to reflect more recent searches?
+8.  Describe the batch job process using Hadoop and HDFS for updating the typeahead suggestions.
+9.  Explain how range-based partitioning can be used to distribute the Trie data across multiple servers in the Google search use case.
+10. How does the suggested system architecture utilize websockets, a load balancer, Kafka, and Hadoop to deliver typeahead suggestions?
+
+Quiz Answer Key
+---------------
+
+1.  The two main examples are auto-suggestions in texting (suggesting words based on prefixes) and the Google search bar (suggesting full search terms). The Google search bar example is more complex because it deals with multiple words and a larger number of potential suggestions.
+2.  The requirements are to quickly load the top suggestions as text is typed, to support both individual words and full search terms, and to update the suggestions at least once per day.
+3.  Prioritizing read speeds is important because users expect suggestions to appear quickly as they type. Otherwise, the feature becomes less useful, since the speed of modern typing would outpace the suggestions.
+4.  The non-caching approach involves storing counts of each word and then computing the top suggestions on the fly by doing a range query and using a min-heap. It saves memory but sacrifices read speed due to the computation needed for each query.
+5.  A Trie allows for O(1) jumps between prefixes, as opposed to the O(n) performance hit in the hash map with the cost of generating hashes of multi-character inputs. Each node in the Trie caches the top suggestions for that prefix, enabling quick access.
+6.  Dictionary compression involves creating a map from short (two-byte) codes to frequently repeated search terms. Instead of storing the full term at each node, the short code is stored, saving memory.
+7.  The challenge lies in the fact that a single write can propagate all the way up the tree to the start node. This requires locking every node or using atomics to increment counters in order to prevent concurrency bugs.
+8.  Search terms are uploaded to HDFS using Kafka and Flink, partitioning by the search term name. A Spark job then converts search terms to prefixes, partitions by prefix, and uses a Min Heap to find the top suggestions, storing the results back in HDFS for the client nodes.
+9.  Range-based partitioning involves sorting all possible search terms alphabetically and assigning ranges of terms to different servers. This ensures that as users type additional characters, they are likely to stay within the same partition and maintain a persistent websocket connection.
+10. Clients connect to a load balancer, which assigns them to a suggestion service with a websocket connection. The load balancer directs click events to an aggregation service, then to Kafka and Hadoop. Hadoop computes frequencies and suggestions, sending them back to the suggestion service to update the Trie.
+
+Essay Questions
+---------------
+
+1.  Discuss the trade-offs between memory usage and read speed when designing a typeahead suggestion system. Compare and contrast the caching and non-caching approaches, providing specific examples of when each would be more suitable.
+2.  Explain the role of data structures, such as Tries and Min Heaps, in optimizing the performance of a typeahead suggestion system. How do these data structures contribute to efficient suggestion retrieval and ranking?
+3.  Describe the challenges involved in scaling a typeahead suggestion system to handle a large volume of data and user traffic. How can techniques like partitioning and replication be used to address these challenges?
+4.  Evaluate the proposed architecture for a distributed typeahead suggestion system, including the use of websockets, Kafka, and Hadoop. What are the strengths and weaknesses of this approach, and how could it be further improved?
+5.  Discuss the importance of updating typeahead suggestions to reflect recent search trends. What are the challenges associated with real-time updates, and how can batch processing techniques be used to address these challenges effectively?
+
+Glossary of Key Terms
+---------------------
+
+-   **Typeahead Suggestion:** A feature that predicts and suggests words or phrases as a user types in a search box or text field.
+-   **Prefix:** A sequence of characters that appears at the beginning of a word or phrase.
+-   **Capacity Estimates:** Calculations and estimations used to determine the storage and processing requirements of a system based on expected usage patterns.
+-   **Caching:** Storing frequently accessed data in memory to reduce access time and improve performance.
+-   **Non-Caching Approach:** An approach where suggestions are computed on-the-fly rather than being pre-computed and stored in memory.
+-   **Min Heap:** A tree-based data structure where the value of each node is less than or equal to the value of its children.
+-   **Trie (Prefix Tree):** A tree-like data structure used for storing strings, where each node represents a character and paths from the root to the leaves represent words or phrases.
+-   **Dictionary Compression:** A technique for reducing memory usage by replacing frequently repeated strings with shorter codes.
+-   **Batch Job:** A process that performs a large number of operations in a single, scheduled run, typically used for data processing and analysis.
+-   **HDFS (Hadoop Distributed File System):** A distributed file system designed for storing and processing large datasets across a cluster of commodity hardware.
+-   **Range-Based Partitioning:** A data partitioning technique where data is divided into ranges based on the sorted values of a key.
+-   **Hotspot:** A partition or server that receives a disproportionately high amount of traffic or requests, leading to performance bottlenecks.
+-   **Websockets:** A communication protocol that provides full-duplex communication channels over a single TCP connection.
+-   **Kafka:** A distributed streaming platform used for building real-time data pipelines and streaming applications.
+-   **Load Balancer:** A device or software that distributes network traffic across multiple servers to ensure high availability and optimal performance.
+-   **Aggregation Service:** A component responsible for collecting and aggregating data from multiple sources into a unified format.
+-   **Stateful Server:** A server that maintains information about past client interactions, such as the current position in the Trie.
+-   **Commodity Hardware:** Readily available and inexpensive computer hardware components.
+-   **Data Locality:** The principle of storing data close to where it is processed to reduce latency and improve performance.
+-   **RPC Call:** Remote Procedure Call; a mechanism that allows a computer program to execute a procedure in another address space (commonly on another computer on a shared network) as if it were a normal (local) procedure call
